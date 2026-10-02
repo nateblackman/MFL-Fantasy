@@ -13,21 +13,7 @@
     <nav id="nav"></nav>
     <div id="auth"></div>
   </header>
-  <main id="view" aria-live="polite"></main>
-
-  <dialog id="login-dialog">
-    <form method="dialog" id="login-form">
-      <h2>Enter PIN</h2>
-      <p class="muted">Your team PIN lets you set your lineup. The commissioner PIN unlocks admin pages.</p>
-      <input id="login-pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="PIN" required>
-      <p id="login-error" class="error" hidden></p>
-      <div class="row-end">
-        <button type="button" class="btn ghost" id="login-cancel">Cancel</button>
-        <button type="submit" class="btn">Log in</button>
-      </div>
-    </form>
-  </dialog>
-
+  <main id="view" aria-live="polite"><p class="muted">Loading…</p></main>
   <div id="toast" role="status" hidden></div>
   <script type="module" src="js/app.js"></script>
 </body>

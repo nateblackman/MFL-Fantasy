@@ -2,10 +2,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
-const { DEFAULT_RULES } = require('./scoring');
-const { buildSchedule } = require('./schedule');
 
-const TEAMS = [
+// The six real MFL teams (the league's equivalent of NFL franchises).
+const MFL_TEAMS = [
   { name: 'Loot Lake LLamas', short: 'LLL', color: '#8e44ad' },
   { name: 'Tilted Tower Tyrants', short: 'TTT', color: '#c0392b' },
   { name: 'Tomato Town Titans', short: 'TTN', color: '#e4572e' },
@@ -16,23 +15,30 @@ const TEAMS = [
 
 const DEFAULT_SEASON_WEEKS = 10;
 
-function hashPin(pin) {
+function hashSecret(secret) {
   const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(String(pin), salt, 32).toString('hex');
+  const hash = crypto.scryptSync(String(secret), salt, 32).toString('hex');
   return `${salt}:${hash}`;
 }
 
-function checkPin(pin, stored) {
+function checkSecret(secret, stored) {
   if (!stored) return false;
   const [salt, hash] = stored.split(':');
-  const candidate = crypto.scryptSync(String(pin), salt, 32);
+  const candidate = crypto.scryptSync(String(secret), salt, 32);
   return crypto.timingSafeEqual(candidate, Buffer.from(hash, 'hex'));
 }
+
+const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
 function openDb(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
+  const oldPlayers = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'players'").get();
+  if (oldPlayers && !db.prepare('PRAGMA table_info(players)').all().some((c) => c.name === 'mfl_team_id')) {
+    throw new Error(`${file} was created by the old single-league version. Run "npm run seed" to start a fresh database.`);
+  }
   db.exec(fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8'));
+  db.txDepth = 0;
   return db;
 }
 
@@ -46,8 +52,11 @@ function setSetting(db, key, value) {
     .run(key, value == null ? null : String(value));
 }
 
+// Runs fn in a transaction. Nested calls join the outer transaction.
 function tx(db, fn) {
+  if (db.txDepth > 0) return fn();
   db.exec('BEGIN');
+  db.txDepth++;
   try {
     const result = fn();
     db.exec('COMMIT');
@@ -55,41 +64,20 @@ function tx(db, fn) {
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
+  } finally {
+    db.txDepth--;
   }
 }
 
-function writeSchedule(db, seasonWeeks) {
-  const teamIds = db.prepare('SELECT id FROM teams ORDER BY id').all().map((t) => t.id);
+function seedIfEmpty(db) {
+  if (db.prepare('SELECT COUNT(*) AS n FROM mfl_teams').get().n > 0) return false;
   tx(db, () => {
-    db.exec('DELETE FROM matchups');
-    const ins = db.prepare('INSERT INTO matchups (week, home_team_id, away_team_id) VALUES (?, ?, ?)');
-    for (const g of buildSchedule(teamIds, seasonWeeks)) ins.run(g.week, g.home, g.away);
-    setSetting(db, 'season_weeks', seasonWeeks);
-  });
-}
-
-// Seeds teams, rules, settings and a schedule if the league is empty.
-// Returns the PINs it created so they can be printed once.
-function seedIfEmpty(db, { commishPin, teamPins } = {}) {
-  const count = db.prepare('SELECT COUNT(*) AS n FROM teams').get().n;
-  if (count > 0) return null;
-
-  const pins = { commish: String(commishPin || process.env.COMMISH_PIN || '0000'), teams: {} };
-  tx(db, () => {
-    const insTeam = db.prepare('INSERT INTO teams (name, short, color, pin_hash) VALUES (?, ?, ?, ?)');
-    TEAMS.forEach((t, i) => {
-      const pin = String((teamPins && teamPins[i]) || 1001 + i);
-      insTeam.run(t.name, t.short, t.color, hashPin(pin));
-      pins.teams[t.name] = pin;
-    });
-    const insRule = db.prepare('INSERT OR REPLACE INTO scoring_rules (key, points) VALUES (?, ?)');
-    for (const [k, v] of Object.entries(DEFAULT_RULES)) insRule.run(k, v);
-    setSetting(db, 'commish_pin_hash', hashPin(pins.commish));
+    const ins = db.prepare('INSERT INTO mfl_teams (name, short, color) VALUES (?, ?, ?)');
+    for (const t of MFL_TEAMS) ins.run(t.name, t.short, t.color);
     setSetting(db, 'current_week', 1);
-    if (!getSetting(db, 'session_secret')) setSetting(db, 'session_secret', crypto.randomBytes(32).toString('hex'));
+    setSetting(db, 'season_weeks', DEFAULT_SEASON_WEEKS);
   });
-  writeSchedule(db, DEFAULT_SEASON_WEEKS);
-  return pins;
+  return true;
 }
 
 function defaultDbFile() {
@@ -97,6 +85,6 @@ function defaultDbFile() {
 }
 
 module.exports = {
-  TEAMS, openDb, seedIfEmpty, getSetting, setSetting, tx, writeSchedule,
-  hashPin, checkPin, defaultDbFile,
+  MFL_TEAMS, openDb, seedIfEmpty, getSetting, setSetting, tx,
+  hashSecret, checkSecret, sha256, defaultDbFile,
 };
